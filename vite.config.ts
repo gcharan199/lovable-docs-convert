@@ -18,4 +18,16 @@ export default defineConfig(({ mode }) => ({
       "@": path.resolve(__dirname, "./src"),
     },
   },
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          "vendor-pdfjs": ["pdfjs-dist"],
+          "vendor-tesseract": ["tesseract.js"],
+          "vendor-docx": ["docx"],
+          "vendor-ui": ["framer-motion", "lucide-react"],
+        },
+      },
+    },
+  },
 }));
