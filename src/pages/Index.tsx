@@ -25,6 +25,7 @@ import {
   MAX_FILE_SIZE,
 } from "@/lib/conversion";
 import type { OcrProgress } from "@/lib/ocrProcessor";
+import type { DocElement } from "@/lib/layoutParser";
 import { useToast } from "@/hooks/use-toast";
 import type { Database } from "@/integrations/supabase/types";
 
@@ -92,6 +93,7 @@ const Index = () => {
   >(null);
   const [currentFilename, setCurrentFilename] = useState("");
   const [extractedText, setExtractedText] = useState<string | null>(null);
+  const [docElements, setDocElements] = useState<DocElement[]>([]);
   const [errorMessage, setErrorMessage] = useState<string | undefined>();
   const [ocrProgress, setOcrProgress] = useState<OcrProgress | null>(null);
   const [conversions, setConversions] = useState<Conversion[]>([]);
@@ -117,6 +119,7 @@ const Index = () => {
     setCurrentStatus("pending");
     setCurrentFilename(file.name);
     setExtractedText(null);
+    setDocElements([]);
     setErrorMessage(undefined);
     setOcrProgress(null);
 
@@ -132,11 +135,15 @@ const Index = () => {
 
       setCurrentStatus("completed");
       setExtractedText(result.text);
+      setDocElements(result.elements);
+
+      const tableCount = result.elements.filter((e) => e.type === "table").length;
+      const tableNote = tableCount > 0 ? ` · ${tableCount} table${tableCount === 1 ? "" : "s"} detected` : "";
       toast({
         title: "Conversion complete!",
         description: result.usedOcr
-          ? `${result.pageCount} page${result.pageCount === 1 ? "" : "s"} processed with OCR.`
-          : `${result.pageCount} page${result.pageCount === 1 ? "" : "s"} extracted.`,
+          ? `${result.pageCount} page${result.pageCount === 1 ? "" : "s"} processed with OCR${tableNote}.`
+          : `${result.pageCount} page${result.pageCount === 1 ? "" : "s"} extracted${tableNote}.`,
       });
     } catch (error: unknown) {
       const msg = error instanceof Error ? error.message : "An unexpected error occurred.";
@@ -150,13 +157,16 @@ const Index = () => {
   };
 
   const handleDownload = () => {
-    if (extractedText && currentFilename) generateWordDocument(extractedText, currentFilename);
+    if (currentFilename) {
+      generateWordDocument(docElements, currentFilename, extractedText ?? undefined);
+    }
   };
 
   const handleReset = () => {
     setCurrentStatus(null);
     setCurrentFilename("");
     setExtractedText(null);
+    setDocElements([]);
     setErrorMessage(undefined);
     setOcrProgress(null);
   };

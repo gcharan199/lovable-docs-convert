@@ -1,9 +1,18 @@
 import * as pdfjsLib from "pdfjs-dist";
+import type { TextItem } from "pdfjs-dist/types/src/display/api";
 import { createWorker } from "tesseract.js";
 
-// Point to the pdfjs worker bundled by Vite
 import pdfjsWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorkerUrl;
+
+import {
+  buildDocElements,
+  elementsToText,
+  type DocElement,
+  type ParagraphElement,
+} from "./layoutParser";
+
+// ─── Progress reporting ──────────────────────────────────────────────────────
 
 export interface OcrProgress {
   page: number;
@@ -13,14 +22,23 @@ export interface OcrProgress {
   pageLabel?: string;
 }
 
+// ─── Result ──────────────────────────────────────────────────────────────────
+
 export interface OcrResult {
+  /** Structured layout elements (paragraphs + tables) for Word doc generation */
+  elements: DocElement[];
+  /** Flat text for DB storage and the text preview UI */
   text: string;
   pageCount: number;
   usedOcr: boolean;
 }
 
-// Pages with fewer than this many characters are treated as image-only
+// ─── Constants ───────────────────────────────────────────────────────────────
+
+/** Minimum embedded-text characters for a page to be considered digital (not scanned) */
 const TEXT_THRESHOLD = 30;
+
+// ─── Main export ─────────────────────────────────────────────────────────────
 
 export async function processPdfClientSide(
   file: File,
@@ -34,7 +52,9 @@ export async function processPdfClientSide(
 
   let tesseractWorker: Awaited<ReturnType<typeof createWorker>> | null = null;
   let usedOcr = false;
-  const pageTexts: string[] = [];
+
+  // Collect per-page elements; pageBreak sentinels are inserted between pages
+  const allElements: DocElement[] = [];
 
   for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
     const basePercentage = Math.round(((pageNum - 1) / totalPages) * 100);
@@ -47,24 +67,41 @@ export async function processPdfClientSide(
       pageLabel: `Reading page ${pageNum} of ${totalPages}`,
     });
 
+    // Insert page-break sentinel between pages (not before first page)
+    if (pageNum > 1) {
+      allElements.push({ type: "pageBreak" });
+    }
+
     const page = await pdf.getPage(pageNum);
 
-    // Try embedded text first
+    // Use scale-1 viewport to get page dimensions in PDF user units
+    const viewport = page.getViewport({ scale: 1 });
+    const pageHeight = viewport.viewBox[3]; // bottom-up height in PDF units
+
+    // ── Try embedded text first ───────────────────────────────────────────
     const textContent = await page.getTextContent();
-    const embeddedText = textContent.items
-      .map((item) => ("str" in item ? item.str : ""))
-      .join(" ")
+
+    // Quick check: is there meaningful embedded text?
+    const embeddedRaw = textContent.items
+      .filter((it): it is TextItem => !("type" in it))
+      .map((it) => it.str)
+      .join("")
       .trim();
 
-    if (embeddedText.length >= TEXT_THRESHOLD) {
-      pageTexts.push(embeddedText);
+    if (embeddedRaw.length >= TEXT_THRESHOLD) {
+      // ── Digital page: use layout parser ─────────────────────────────────
+      const pageElements = buildDocElements(
+        textContent.items as Array<TextItem | { type: string }>,
+        pageHeight
+      );
+      allElements.push(...pageElements);
     } else {
-      // Image-only page — OCR it
+      // ── Scanned / image-only page: OCR ───────────────────────────────────
       usedOcr = true;
 
       if (!tesseractWorker) {
         tesseractWorker = await createWorker("eng", 1, {
-          logger: () => {}, // suppress verbose logs
+          logger: () => {},
         });
       }
 
@@ -76,21 +113,38 @@ export async function processPdfClientSide(
         pageLabel: `OCR scanning page ${pageNum} of ${totalPages}`,
       });
 
-      // Render page to canvas
-      const scale = 2; // higher scale = better OCR accuracy
-      const viewport = page.getViewport({ scale });
+      const scale = 2;
+      const scaledViewport = page.getViewport({ scale });
       const canvas = document.createElement("canvas");
-      canvas.width = viewport.width;
-      canvas.height = viewport.height;
+      canvas.width = scaledViewport.width;
+      canvas.height = scaledViewport.height;
       const ctx = canvas.getContext("2d")!;
-      await page.render({ canvasContext: ctx, viewport }).promise;
+      await page.render({ canvasContext: ctx, viewport: scaledViewport }).promise;
 
       const {
         data: { text: ocrText },
       } = await tesseractWorker.recognize(canvas);
-      pageTexts.push(ocrText.trim());
 
       canvas.remove();
+
+      // Convert OCR lines to paragraph elements
+      const ocrLines = ocrText
+        .split("\n")
+        .map((l) => l.trim())
+        .filter(Boolean);
+
+      for (const line of ocrLines) {
+        const para: ParagraphElement = {
+          type: "paragraph",
+          text: line,
+          isHeading:
+            line.length > 0 &&
+            line.length < 80 &&
+            line === line.toUpperCase() &&
+            /[A-Z]/.test(line),
+        };
+        allElements.push(para);
+      }
     }
   }
 
@@ -106,10 +160,7 @@ export async function processPdfClientSide(
     pageLabel: "Processing complete",
   });
 
-  // Join pages with a separator that the Word generator recognises
-  const fullText = pageTexts
-    .map((t, i) => (i === 0 ? t : `--- Page Break ---\n${t}`))
-    .join("\n\n");
+  const text = elementsToText(allElements);
 
-  return { text: fullText, pageCount: totalPages, usedOcr };
+  return { elements: allElements, text, pageCount: totalPages, usedOcr };
 }
