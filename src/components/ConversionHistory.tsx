@@ -103,9 +103,9 @@ const ConversionHistory = ({ conversions }: ConversionHistoryProps) => {
                       <Button
                         size="sm"
                         variant="ghost"
-                        onClick={() =>
-                          generateWordDocument(conv.extracted_text!, conv.original_filename)
-                        }
+                    onClick={() =>
+                        generateWordDocument([], conv.original_filename, conv.extracted_text!)
+                    }
                         className="h-7 w-7 p-0 text-muted-foreground hover:text-primary hover:bg-primary/10 opacity-0 group-hover:opacity-100 transition-all duration-150"
                         title="Re-download .docx"
                       >
